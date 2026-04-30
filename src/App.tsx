@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Volume2, Settings, X, Check, Trophy } from 'lucide-react';
+import { Volume2, Settings, X, Check, Trophy, Copy } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { WordListCategory, INITIAL_WORD_LISTS } from './constants';
 import { analyzeSpelling, sounds } from './utils/gameUtils';
@@ -57,6 +57,11 @@ export default function App() {
   const [editingList, setEditingList] = useState<string | null>(null);
   const [showSaved, setShowSaved] = useState(false);
   const [isConfirmingRestore, setIsConfirmingRestore] = useState(false);
+  const [logs, setLogs] = useState<{ id: string; message: string; timestamp: number }[]>(() => {
+    const saved = localStorage.getItem('bee_test_logs');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [showLogs, setShowLogs] = useState(false);
 
   // --- Metrics & Tower ---
   const [wordStartTime, setWordStartTime] = useState<number>(0);
@@ -98,6 +103,10 @@ export default function App() {
   }, [streak]);
 
   useEffect(() => {
+    localStorage.setItem('bee_test_logs', JSON.stringify(logs));
+  }, [logs]);
+
+  useEffect(() => {
     const loadVoices = () => {
       // Filter for US and UK English only
       const allVoices = window.speechSynthesis.getVoices();
@@ -114,36 +123,88 @@ export default function App() {
     window.speechSynthesis.onvoiceschanged = loadVoices;
   }, []);
 
+  const addLog = React.useCallback((message: string) => {
+    const newLog = {
+      id: Math.random().toString(36).substr(2, 9),
+      message,
+      timestamp: Date.now()
+    };
+    setLogs(prev => [newLog, ...prev].slice(0, 20));
+  }, []);
+
+  const handleToggleLogs = () => {
+    const nextState = !showLogs;
+    setShowLogs(nextState);
+    addLog(`System: Log panel toggled ${nextState ? 'ON' : 'OFF'}`);
+  };
+
+  useEffect(() => {
+    addLog(`System: Audio logging system ready. BASE_URL: "${import.meta.env.BASE_URL}"`);
+  }, [addLog]);
+
+  const handleCopyLogs = () => {
+    const text = logs.map(log => `[${new Date(log.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}] ${log.message}`).join('\n');
+    navigator.clipboard.writeText(text);
+    addLog('System: Logs copied to clipboard.');
+  };
+
   const speak = (text: string) => {
     window.speechSynthesis.cancel();
 
     if (selectedVoice === 'Studio Recording') {
       // Normalize text to match Title Case filename (e.g., 'book' -> 'Book')
       const normalizedFileName = text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
-      const audioPath = `${import.meta.env.BASE_URL}audio/${normalizedFileName}.mp3`.replace(/\/+/g, '/');
-      const audio = new Audio(audioPath);
+      const relativePath = `/audio/${normalizedFileName}.mp3`;
+      const audioUrl = new URL(relativePath, window.location.origin).href;
+      const logMsg = `Reproducing word: "${text}" | Source: Studio Recording | URL: ${audioUrl}`;
+      console.log(`[Testing] ${logMsg}`);
+      addLog(logMsg);
+
+      // Verify reachability
+      fetch(audioUrl, { method: 'HEAD' }).then(res => {
+        if (!res.ok) {
+          addLog(`Diagnostic: Server returned ${res.status} for ${relativePath}`);
+        } else {
+          addLog(`Diagnostic: File exists and is reachable (${res.status})`);
+        }
+      }).catch(err => {
+        addLog(`Diagnostic: Fetch error: ${err.message}`);
+      });
+
+      const audio = new Audio(audioUrl);
       
-      const fallbackSpeak = () => {
+      const fallbackSpeak = (errorDetails?: string) => {
         const utterance = new SpeechSynthesisUtterance(text);
-        // Find a fallback US voice if possible
         const fallbackVoice = voices.current.find(v => v.lang.includes('en-US')) || voices.current[0];
         if (fallbackVoice) utterance.voice = fallbackVoice;
+        
+        const fallbackMsg = `Fallback triggered for "${text}" ${errorDetails ? `(Error: ${errorDetails})` : ""} | Source: Speech Synthesis (Voice: ${fallbackVoice?.name || 'Default'})`;
+        console.log(`[Testing] ${fallbackMsg}`);
+        addLog(fallbackMsg);
         window.speechSynthesis.speak(utterance);
       };
 
       audio.play().catch((err) => {
-        console.warn(`Local audio not found for "${text}", falling back to synthesis.`, err);
-        fallbackSpeak();
+        const errorInfo = err instanceof Error ? err.message : String(err);
+        console.warn(`Local audio failed for "${text}": ${errorInfo}`, err);
+        fallbackSpeak(errorInfo);
       });
 
       return;
     }
 
     const utterance = new SpeechSynthesisUtterance(text);
+    let voiceName = 'Default';
     if (selectedVoice) {
       const voice = voices.current.find(v => v.name === selectedVoice);
-      if (voice) utterance.voice = voice;
+      if (voice) {
+        utterance.voice = voice;
+        voiceName = voice.name;
+      }
     }
+    const logMsg = `Reproducing word: "${text}" | Source: Speech Synthesis (Voice: ${voiceName})`;
+    console.log(`[Testing] ${logMsg}`);
+    addLog(logMsg);
     window.speechSynthesis.speak(utterance);
   };
 
@@ -491,6 +552,54 @@ export default function App() {
               </div>
             )}
           </div>
+        </div>
+
+        {/* Test Logs Section */}
+        <div className="mt-8 border-t-2 border-stone-100 pt-4 pb-8">
+          <button 
+            onClick={handleToggleLogs}
+            className="flex items-center gap-2 text-[10px] font-black text-stone-400 uppercase tracking-widest hover:text-stone-600 transition-colors"
+          >
+            <div className={`w-2 h-2 rounded-full ${logs.length > 0 ? 'bg-green-500 animate-pulse' : 'bg-stone-300'}`} />
+            Test Audio Logs {showLogs ? '(Hide)' : '(Show)'}
+          </button>
+          
+          <AnimatePresence>
+            {showLogs && (
+              <motion.div 
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="mt-3 overflow-hidden"
+              >
+                <div className="bg-stone-900 rounded-xl p-3 font-mono text-[9px] text-stone-300 space-y-1.5 shadow-inner max-h-48 overflow-y-auto">
+                  {logs.length > 0 ? (
+                    logs.map(log => (
+                      <div key={log.id} className="border-l-2 border-yellow-500/30 pl-2 py-0.5 leading-relaxed">
+                        <span className="text-yellow-500/50">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]</span> {log.message}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="italic text-stone-600">No logs generated yet. Play some audio!</div>
+                  )}
+                </div>
+                <div className="flex gap-2 mt-2">
+                  <button 
+                    onClick={() => setLogs([])}
+                    className="text-[9px] font-bold text-red-400 hover:text-red-500 uppercase tracking-tighter"
+                  >
+                    Clear Logs
+                  </button>
+                  <button 
+                    onClick={handleCopyLogs}
+                    className="text-[9px] font-bold text-blue-400 hover:text-blue-500 uppercase tracking-tighter flex items-center gap-1"
+                  >
+                    <Copy size={10} /> Copy Logs
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </main>
 
