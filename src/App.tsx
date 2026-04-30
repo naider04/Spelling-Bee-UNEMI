@@ -152,26 +152,15 @@ export default function App() {
     window.speechSynthesis.cancel();
 
     if (selectedVoice === 'Studio Recording') {
-      // Normalize text to match Title Case filename (e.g., 'book' -> 'Book')
       const normalizedFileName = text.charAt(0).toUpperCase() + text.slice(1).toLowerCase();
-      const relativePath = `/audio/${normalizedFileName}.mp3`;
-      const audioUrl = new URL(relativePath, window.location.origin).href;
-      const logMsg = `Reproducing word: "${text}" | Source: Studio Recording | URL: ${audioUrl}`;
+      // Use simple relative path from root
+      const audioPath = `/audio/${normalizedFileName}.mp3`;
+      
+      const logMsg = `Attempting Studio Recording: "${text}" | Path: ${audioPath}`;
       console.log(`[Testing] ${logMsg}`);
       addLog(logMsg);
 
-      // Verify reachability
-      fetch(audioUrl, { method: 'HEAD' }).then(res => {
-        if (!res.ok) {
-          addLog(`Diagnostic: Server returned ${res.status} for ${relativePath}`);
-        } else {
-          addLog(`Diagnostic: File exists and is reachable (${res.status})`);
-        }
-      }).catch(err => {
-        addLog(`Diagnostic: Fetch error: ${err.message}`);
-      });
-
-      const audio = new Audio(audioUrl);
+      const audio = new Audio(audioPath);
       
       const fallbackSpeak = (errorDetails?: string) => {
         const utterance = new SpeechSynthesisUtterance(text);
@@ -184,8 +173,26 @@ export default function App() {
         window.speechSynthesis.speak(utterance);
       };
 
+      // Diagnostic check with fetch to see if the path is reachable
+      fetch(audioPath, { method: 'HEAD' })
+        .then(res => {
+          if (!res.ok) {
+            addLog(`Diagnostic: Path ${audioPath} returned ${res.status}`);
+          }
+        })
+        .catch(err => {
+          addLog(`Diagnostic: Fetch error for ${audioPath}: ${err.message}`);
+        });
+
       audio.play().catch((err) => {
-        const errorInfo = err instanceof Error ? err.message : String(err);
+        let errorInfo = 'Unknown Error';
+        if (err instanceof Error) {
+          errorInfo = err.message;
+        } else if (audio.error) {
+          // Check the HTMLMediaError code
+          // 1: MEDIA_ERR_ABORTED, 2: MEDIA_ERR_NETWORK, 3: MEDIA_ERR_DECODE, 4: MEDIA_ERR_SRC_NOT_SUPPORTED
+          errorInfo = `MediaError Code: ${audio.error.code}`;
+        }
         console.warn(`Local audio failed for "${text}": ${errorInfo}`, err);
         fallbackSpeak(errorInfo);
       });
