@@ -226,9 +226,9 @@ export default function App() {
         isCorrect: false
       };
       setHistory(prev => [newHistoryItem, ...prev].slice(0, 50)); // Newest at top
-      await sounds.playWrong();
       
       if (!repeatMistakes) {
+        await sounds.playWrong();
         getNextWord();
       } else {
         setUserInput('');
