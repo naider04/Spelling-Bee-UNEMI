@@ -8,6 +8,7 @@ import { Volume2, Settings, X, Check, Trophy } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { WordListCategory, INITIAL_WORD_LISTS } from './constants';
 import { analyzeSpelling, sounds } from './utils/gameUtils';
+import { saveUserProgress, loadUserProgress } from './firebase';
 
 interface HistoryItem {
   id: string;
@@ -58,6 +59,10 @@ export default function App() {
   const [showSaved, setShowSaved] = useState(false);
   const [isConfirmingRestore, setIsConfirmingRestore] = useState(false);
 
+  // --- Student ID / Name ---
+  const [studentName, setStudentName] = useState(() => localStorage.getItem('bee_student_name') || '');
+  const [isSyncing, setIsSyncing] = useState(false);
+
   // --- Metrics & Tower ---
   const [wordStartTime, setWordStartTime] = useState<number>(0);
   const [totalTime, setTotalTime] = useState(0);
@@ -81,6 +86,28 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('bee_selected_voice', selectedVoice);
   }, [selectedVoice]);
+
+  useEffect(() => {
+    localStorage.setItem('bee_student_name', studentName);
+  }, [studentName]);
+
+  // Load existing progress from Firebase on start
+  useEffect(() => {
+    const fetchProgress = async () => {
+      setIsSyncing(true);
+      const data = await loadUserProgress();
+      if (data) {
+        if (data.name && !studentName) setStudentName(data.name);
+        if (data.correctTotal > correctTotal) setCorrectTotal(data.correctTotal);
+        if (data.maxStreak > maxStreak) setMaxStreak(data.maxStreak);
+        if (data.totalTime > totalTime) setTotalTime(data.totalTime);
+        // We don't necessarily want to overwrite current session history,
+        // but we could merge if needed. For now, let's keep session history local.
+      }
+      setIsSyncing(false);
+    };
+    fetchProgress();
+  }, []);
 
   useEffect(() => {
     let timeout: NodeJS.Timeout;
@@ -196,10 +223,27 @@ export default function App() {
       lastProcessedWord.current = currentWord;
 
       const timeTaken = (Date.now() - wordStartTime) / 1000;
-      setTotalTime(prev => prev + timeTaken);
-      setCorrectTotal(prev => prev + 1);
-      
-      setStreak(prev => prev + 1);
+      const newTotalTime = totalTime + timeTaken;
+      const newCorrectTotal = correctTotal + 1;
+      const newStreak = streak + 1;
+      const newMaxStreak = Math.max(maxStreak, newStreak);
+
+      setTotalTime(newTotalTime);
+      setCorrectTotal(newCorrectTotal);
+      setStreak(newStreak);
+      setIsFalling(false);
+
+      if (studentName) {
+        saveUserProgress({
+          name: studentName,
+          correctTotal: newCorrectTotal,
+          streak: newStreak,
+          maxStreak: newMaxStreak,
+          totalTime: newTotalTime,
+          mistakes: history.map(h => ({ word: h.word, guess: h.guess }))
+        });
+      }
+
       setCorrectWords(prev => {
         // Prevent duplicate consecutive entries of the same word (e.g. from double-submits)
         if (prev[0] === currentWord) return prev;
@@ -210,12 +254,6 @@ export default function App() {
       await sounds.playCorrect();
       getNextWord();
     } else {
-      setStreak(0);
-      setIsFalling(true);
-      setTimeout(() => {
-        setIsFalling(false);
-      }, 1000);
-
       const { tip, coloredGuess } = analyzeSpelling(userInput, currentWord);
       const newHistoryItem: HistoryItem = {
         id: Math.random().toString(36).substr(2, 9),
@@ -225,11 +263,29 @@ export default function App() {
         coloredGuess,
         isCorrect: false
       };
-      setHistory(prev => [newHistoryItem, ...prev].slice(0, 50)); // Newest at top
       
+      const newHistory = [newHistoryItem, ...history].slice(0, 50);
+      setHistory(newHistory);
+      setStreak(0);
+      setIsFalling(true);
+      setTimeout(() => setIsFalling(false), 1000);
+
+      if (studentName) {
+        saveUserProgress({
+          name: studentName,
+          correctTotal,
+          streak: 0,
+          maxStreak,
+          totalTime,
+          mistakes: newHistory.map(h => ({ word: h.word, guess: h.guess }))
+        });
+      }
+
       if (!repeatMistakes) {
-        await sounds.playWrong();
-        getNextWord();
+        setTimeout(async () => {
+          await sounds.playWrong();
+          getNextWord();
+        }, 100);
       } else {
         setUserInput('');
         setWordStartTime(Date.now());
@@ -258,11 +314,18 @@ export default function App() {
     <div className="min-h-screen bg-stone-50 font-sans text-stone-900 select-none flex flex-col md:max-w-md mx-auto relative overflow-hidden text-sm">
       {/* Header */}
       <header className="bg-yellow-400 px-3 py-2 border-b-2 border-stone-800 flex justify-between items-center shadow-[2px_2px_0px_0px_rgba(28,25,23,1)] z-40">
-        <div className="flex items-center gap-1.5">
-          <div className="w-8 h-8 bg-black rounded-full flex items-center justify-center border border-white">
+        <div className="flex items-center gap-1.5 overflow-hidden">
+          <div className="w-8 h-8 bg-black rounded-full flex items-center justify-center border border-white shrink-0">
             <span className="text-sm">🐝</span>
           </div>
-          <h1 className="font-black text-xs uppercase italic leading-none">Spelling Bee<br/><span className="text-[10px] opacity-70">Competition</span></h1>
+          <div className="flex flex-col min-w-0">
+            <h1 className="font-black text-xs uppercase italic leading-none truncate">Spelling Bee</h1>
+            {studentName ? (
+              <span className="text-[9px] font-bold text-stone-700 truncate">{studentName}</span>
+            ) : (
+              <span className="text-[10px] opacity-70">Competition</span>
+            )}
+          </div>
         </div>
         <div className="flex gap-1.5 relative">
           <button 
@@ -381,6 +444,27 @@ export default function App() {
       </div>
 
       <main className="flex-1 p-3 flex flex-col gap-4 overflow-y-auto relative">
+        {/* Name Input Bar if not set */}
+        {!studentName && (
+          <div className="bg-white border-2 border-stone-800 p-3 rounded-xl shadow-[3px_3px_0px_0px_rgba(28,25,23,1)] animate-pulse">
+            <p className="text-[10px] font-black text-stone-400 uppercase tracking-widest mb-1.5">Enter Name to Track Progress</p>
+            <input 
+              type="text"
+              placeholder="Your Name / ID..."
+              className="w-full p-2 border-2 border-stone-100 rounded-lg text-sm font-bold focus:border-yellow-400 outline-none"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  setStudentName((e.target as HTMLInputElement).value.trim());
+                }
+              }}
+              onBlur={(e) => {
+                const val = e.target.value.trim();
+                if (val) setStudentName(val);
+              }}
+            />
+          </div>
+        )}
+
         {/* Action Controls - Moved to top */}
         <div className="flex flex-col gap-3 sticky top-0 bg-stone-50 z-10 pt-1 pb-4 border-b border-stone-100 shadow-[0_4px_6px_-1px_rgba(0,0,0,0.05)]">
           <div className="flex justify-center">
